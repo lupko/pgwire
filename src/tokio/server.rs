@@ -418,7 +418,8 @@ where
         #[cfg(any(feature = "_ring", feature = "_aws-lc-rs"))]
         {
             // mention the use of ssl
-            let client_info = DefaultClient::new(addr, true);
+            let mut client_info = DefaultClient::new(addr, true);
+
             // safe to unwrap tls_acceptor here
             let ssl_socket = tls_acceptor
                 .unwrap()
@@ -428,6 +429,12 @@ where
             // check alpn for direct ssl connection
             if ssl == SslNegotiationType::Direct {
                 check_alpn_for_direct_ssl(&ssl_socket)?;
+            } else {
+                // doing an upgrade of existing connection based on SslRequest message
+                // received from the client. Make sure to set new client_info's state
+                // to AwaitingStartup instead of the default AwaitingSslRequest - because
+                // next message that comes from the client will be the Startup.
+                client_info.set_state(PgWireConnectionState::AwaitingStartup);
             }
 
             let mut socket = Framed::new(ssl_socket, PgWireMessageServerCodec::new(client_info));
