@@ -3,24 +3,22 @@ use std::fmt::Debug;
 use async_trait::async_trait;
 use futures::sink::{Sink, SinkExt};
 
-use super::{
-    AuthSource, ClientInfo, LoginInfo, PgWireConnectionState, ServerParameterProvider,
-    StartupHandler,
-};
+use super::{AuthSource, AuthenticationEventHandler, ClientInfo, LoginInfo, PgWireConnectionState, ServerParameterProvider, StartupHandler};
 use crate::error::{ErrorInfo, PgWireError, PgWireResult};
 use crate::messages::response::ErrorResponse;
 use crate::messages::startup::Authentication;
 use crate::messages::{PgWireBackendMessage, PgWireFrontendMessage};
 
 #[derive(new)]
-pub struct CleartextPasswordAuthStartupHandler<A, P> {
+pub struct CleartextPasswordAuthStartupHandler<A, P, E> {
     auth_source: A,
     parameter_provider: P,
+    event_handler: E
 }
 
 #[async_trait]
-impl<V: AuthSource, P: ServerParameterProvider> StartupHandler
-    for CleartextPasswordAuthStartupHandler<V, P>
+impl<V: AuthSource, P: ServerParameterProvider, E: AuthenticationEventHandler> StartupHandler
+    for CleartextPasswordAuthStartupHandler<V, P, E>
 {
     async fn on_startup<C>(
         &self,
@@ -47,8 +45,12 @@ impl<V: AuthSource, P: ServerParameterProvider> StartupHandler
                 let login_info = LoginInfo::from_client_info(client);
                 let pass = self.auth_source.get_password(&login_info).await?;
                 if pass.password == pwd.password.as_bytes() {
+                    self.event_handler.on_authentication_succeeded(&login_info).await;
+
                     super::finish_authentication(client, &self.parameter_provider).await?;
                 } else {
+                    self.event_handler.on_authentication_failed(&login_info).await;
+
                     let error_info = ErrorInfo::new(
                         "FATAL".to_owned(),
                         "28P01".to_owned(),

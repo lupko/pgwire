@@ -18,7 +18,7 @@ use aws_lc_rs::{digest, hmac, pbkdf2};
 #[cfg(feature = "_ring")]
 use ring::{digest, hmac, pbkdf2};
 
-use crate::api::auth::{AuthSource, LoginInfo, Password};
+use crate::api::auth::{AuthSource, AuthenticationEventHandler, LoginInfo, Password};
 use crate::api::{ClientInfo, PgWireConnectionState};
 use crate::error::{PgWireError, PgWireResult};
 use crate::messages::startup::Authentication;
@@ -34,9 +34,10 @@ pub enum ScramState {
 }
 
 #[derive(Debug)]
-pub struct SASLScramAuthStartupHandler<A, P> {
+pub struct SASLScramAuthStartupHandler<A, P, E> {
     auth_db: Arc<A>,
     parameter_provider: Arc<P>,
+    event_handler: Arc<E>,
     /// state of the client-server communication
     state: Mutex<ScramState>,
     /// base64 encoded certificate signature for tls-server-end-point channel binding
@@ -66,7 +67,7 @@ pub fn random_nonce() -> String {
     STANDARD.encode(rand::random::<[u8; 18]>())
 }
 
-impl<A, P> SASLScramAuthStartupHandler<A, P> {
+impl<A, P, E> SASLScramAuthStartupHandler<A, P, E> {
     fn compute_channel_binding(&self, client_channel_binding: &str) -> String {
         if client_channel_binding.starts_with("p=tls-server-end-point") {
             format!(
@@ -84,8 +85,8 @@ impl<A, P> SASLScramAuthStartupHandler<A, P> {
 }
 
 #[async_trait]
-impl<A: AuthSource, P: ServerParameterProvider> StartupHandler
-    for SASLScramAuthStartupHandler<A, P>
+impl<A: AuthSource, P: ServerParameterProvider, E: AuthenticationEventHandler> StartupHandler
+    for SASLScramAuthStartupHandler<A, P, E>
 {
     async fn on_startup<C>(
         &self,
@@ -206,6 +207,10 @@ impl<A: AuthSource, P: ServerParameterProvider> StartupHandler
                             } else {
                                 let server_final =
                                     ServerFinalError::new("invalid-proof".to_owned());
+
+                                let login_info = LoginInfo::from_client_info(client);
+                                self.event_handler.on_authentication_failed(&login_info).await;
+
                                 Authentication::SASLFinal(Bytes::from(server_final.message()))
                             }
                         }
@@ -217,6 +222,9 @@ impl<A: AuthSource, P: ServerParameterProvider> StartupHandler
                     .await?;
 
                 if success {
+                    let login_info = LoginInfo::from_client_info(client);
+                    self.event_handler.on_authentication_succeeded(&login_info).await;
+
                     super::finish_authentication(client, self.parameter_provider.as_ref()).await?;
                 }
             }
@@ -227,11 +235,12 @@ impl<A: AuthSource, P: ServerParameterProvider> StartupHandler
     }
 }
 
-impl<A, P> SASLScramAuthStartupHandler<A, P> {
-    pub fn new(auth_db: Arc<A>, parameter_provider: Arc<P>) -> Self {
+impl<A, P, E> SASLScramAuthStartupHandler<A, P, E> {
+    pub fn new(auth_db: Arc<A>, parameter_provider: Arc<P>, event_handler: Arc<E>) -> Self {
         SASLScramAuthStartupHandler {
             auth_db,
             parameter_provider,
+            event_handler,
             state: Mutex::new(ScramState::Initial),
             server_cert_sig: None,
             iterations: 4096,

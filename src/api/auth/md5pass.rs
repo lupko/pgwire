@@ -5,34 +5,33 @@ use async_trait::async_trait;
 use futures::sink::{Sink, SinkExt};
 use tokio::sync::Mutex;
 
-use super::{
-    AuthSource, ClientInfo, LoginInfo, PgWireConnectionState, ServerParameterProvider,
-    StartupHandler,
-};
+use super::{AuthSource, AuthenticationEventHandler, ClientInfo, LoginInfo, PgWireConnectionState, ServerParameterProvider, StartupHandler};
 use crate::error::{ErrorInfo, PgWireError, PgWireResult};
 use crate::messages::response::ErrorResponse;
 use crate::messages::startup::Authentication;
 use crate::messages::{PgWireBackendMessage, PgWireFrontendMessage};
 
-pub struct Md5PasswordAuthStartupHandler<A, P> {
+pub struct Md5PasswordAuthStartupHandler<A, P, E> {
     auth_source: Arc<A>,
     parameter_provider: Arc<P>,
     cached_password: Mutex<Vec<u8>>,
+    event_handler: Arc<E>
 }
 
-impl<A, P> Md5PasswordAuthStartupHandler<A, P> {
-    pub fn new(auth_source: Arc<A>, parameter_provider: Arc<P>) -> Self {
+impl<A, P, E> Md5PasswordAuthStartupHandler<A, P, E> {
+    pub fn new(auth_source: Arc<A>, parameter_provider: Arc<P>, event_handler: Arc<E>) -> Self {
         Md5PasswordAuthStartupHandler {
             auth_source,
             parameter_provider,
             cached_password: Mutex::new(vec![]),
+            event_handler
         }
     }
 }
 
 #[async_trait]
-impl<A: AuthSource, P: ServerParameterProvider> StartupHandler
-    for Md5PasswordAuthStartupHandler<A, P>
+impl<A: AuthSource, P: ServerParameterProvider, E: AuthenticationEventHandler> StartupHandler
+    for Md5PasswordAuthStartupHandler<A, P, E>
 {
     async fn on_startup<C>(
         &self,
@@ -71,10 +70,13 @@ impl<A: AuthSource, P: ServerParameterProvider> StartupHandler
             PgWireFrontendMessage::PasswordMessageFamily(pwd) => {
                 let pwd = pwd.into_password()?;
                 let cached_pass = self.cached_password.lock().await;
+                let login_info = LoginInfo::from_client_info(client);
 
                 if pwd.password.as_bytes() == *cached_pass {
+                    self.event_handler.on_authentication_succeeded(&login_info).await;
                     super::finish_authentication(client, self.parameter_provider.as_ref()).await?;
                 } else {
+                    self.event_handler.on_authentication_failed(&login_info).await;
                     let error_info = ErrorInfo::new(
                         "FATAL".to_owned(),
                         "28P01".to_owned(),

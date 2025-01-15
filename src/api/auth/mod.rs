@@ -31,6 +31,20 @@ pub trait ServerParameterProvider: Send + Sync {
         C: ClientInfo;
 }
 
+#[async_trait]
+pub trait AuthenticationEventHandler: Send + Sync {
+    async fn on_authentication_succeeded(&self, login: &LoginInfo);
+    async fn on_authentication_failed(&self, login: &LoginInfo);
+}
+
+pub struct NoopAuthenticationEventHandler;
+
+#[async_trait]
+impl AuthenticationEventHandler for NoopAuthenticationEventHandler {
+    async fn on_authentication_succeeded(&self, _login: &LoginInfo) {}
+    async fn on_authentication_failed(&self, _login: &LoginInfo) {}
+}
+
 /// Default noop parameter provider.
 ///
 /// This provider responds frontend with default parameters:

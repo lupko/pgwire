@@ -14,7 +14,20 @@ pub trait NoopStartupHandler: StartupHandler {
     async fn post_startup<C>(
         &self,
         _client: &mut C,
-        _message: PgWireFrontendMessage,
+        _message: &PgWireFrontendMessage,
+    ) -> PgWireResult<()>
+    where
+        C: ClientInfo + Sink<PgWireBackendMessage> + Unpin + Send,
+        C::Error: Debug,
+        PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
+    {
+        Ok(())
+    }
+
+    async fn before_authenticated<C>(
+        &self,
+        _client: &mut C,
+        _message: &PgWireFrontendMessage,
     ) -> PgWireResult<()>
     where
         C: ClientInfo + Sink<PgWireBackendMessage> + Unpin + Send,
@@ -42,10 +55,12 @@ where
     {
         if let PgWireFrontendMessage::Startup(ref startup) = message {
             super::save_startup_parameters_to_metadata(client, startup);
+            self.before_authenticated(client, &message).await?;
+
             super::finish_authentication0(client, &DefaultServerParameterProvider::default())
                 .await?;
 
-            self.post_startup(client, message).await?;
+            self.post_startup(client, &message).await?;
 
             client
                 .send(PgWireBackendMessage::ReadyForQuery(ReadyForQuery::new(
